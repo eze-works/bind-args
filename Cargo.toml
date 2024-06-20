@@ -1,0 +1,14 @@
+[package]
+name = "bind-args"
+version = "0.3.0"
+edition = "2021"
+license = "MIT"
+readme = "README.md"
+description = "An unorthodox approach to command line parsing"
+repository = "https://git.sr.ht/~eanyanwu/bind-args"
+keywords = ["cli", "arguments", "parsing"]
+categories = ["command-line-interface"]
+
+[dependencies]
+thiserror = "1.0.61"
+
