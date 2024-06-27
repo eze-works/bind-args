@@ -1,6 +1,6 @@
-use crate::args::Args;
+use crate::cmdline::{Args, CmdLine, HelpRequest};
 use std::collections::{HashMap, HashSet};
-use std::io::stdout;
+use std::io::{stdout, Write};
 
 pub mod help;
 
@@ -105,19 +105,24 @@ pub struct Command {
     names: Vec<&'static str>,
     help: &'static str,
 
+    // The full_path to this command. Used when printing help
+    // e.g. a command named "remote", might have a full path of: ["git", "commit", "remote"]
+    full_path: Vec<&'static str>,
+
     props: Vec<Prop>,
     flags: Vec<Flag>,
     commands: Vec<Command>,
 }
 
 impl Command {
-    /// Creates a new instance.
+    /// Defines a new [`Command`]
     ///
     /// This structure can be used to represent both root and sub-commands.
     pub fn new(name: &'static str, help: &'static str) -> Self {
         Self {
             names: vec![name],
             help,
+            full_path: vec![name],
             props: vec![],
             flags: vec![],
             commands: vec![],
@@ -152,7 +157,10 @@ impl Command {
     }
 
     /// Defines a subcommand
-    pub fn add_command(mut self, subcommand: Command) -> Self {
+    pub fn add_command(mut self, mut subcommand: Command) -> Self {
+        let mut full_path = self.full_path.clone();
+        full_path.extend_from_slice(&subcommand.full_path);
+        subcommand.full_path = full_path;
         self.commands.push(subcommand);
         self
     }
@@ -172,33 +180,47 @@ impl Command {
         self.props.iter().find(|p| p.names.contains(&name))
     }
 
-    /// Prints the help and exits if the user requested it
-    pub fn intercept_help(&self, args: &Args) {
-        if let Some(cmd_arg) = help::requested_help(args).and_then(|s| self.get_subcommand(s)) {
-            let mut stdout = stdout();
-            let mut code = 0;
-            match help::write_help(&mut stdout, cmd_arg) {
-                Ok(_) => {}
-                Err(e) => {
-                    eprintln!("could not write to stdout\n{e}");
-                    code = 1;
-                }
-            };
-            std::process::exit(code);
-        }
-    }
-
     /// Parses the command line arguments `items`, and validates that the parsed structure adheres
     /// to this command definition
+    ///
+    /// If the user passed in a help flag, the appropriate help is printed and the process exits
+    /// without returning from this function.
     pub fn parse_from<I, T>(&self, items: I) -> Result<Args, InvalidArguments>
     where
         I: IntoIterator<Item = T>,
         T: Into<String>,
     {
-        let mut args = Args::parse_from(items);
+        let cmdline = CmdLine::parse_from(items);
+        let mut args = match cmdline {
+            CmdLine::Help(HelpRequest { path }) => {
+                self._print_help_for(path);
+                std::process::exit(0);
+            }
+            CmdLine::Args(a) => a,
+        };
         Self::_validate(self, &args)?;
         Self::_resolve_aliases(self, &mut args);
         Ok(args)
+    }
+
+    fn _print_help_for(&self, path: Vec<String>) {
+        let mut stdout = stdout();
+
+        if path.len() == 1 {
+            help::write_help(&mut stdout, self).unwrap();
+            return;
+        }
+
+        let mut current = self;
+        for segment in path.iter().skip(1) {
+            let Some(cmd) = current.get_subcommand(segment) else {
+                write!(&mut stdout, "no such command '{segment}'").unwrap();
+                return;
+            };
+            current = cmd;
+        }
+
+        help::write_help(&mut stdout, current).unwrap();
     }
 
     fn _resolve_aliases(cmd_def: &Command, cmd_args: &mut Args) {
@@ -309,6 +331,7 @@ mod tests {
         let subcommand = app.get_subcommand("c1").unwrap();
         assert_eq!(subcommand.name(), "my-subcommand");
         assert_eq!(subcommand.get_prop("p2").unwrap().name(), "prop-2");
+        assert_eq!(subcommand.full_path, ["my-command", "my-subcommand"]);
     }
 
     #[test]

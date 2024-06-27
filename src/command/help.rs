@@ -1,20 +1,5 @@
 use super::Command;
-use crate::args::Args;
 use std::io::{self, Write};
-
-/// Returns the name of the command help was requested for, if any
-pub fn requested_help(args: &Args) -> Option<&str> {
-    let mut next = Some(args);
-
-    while let Some(a) = next {
-        if a.flags.contains("h") || a.flags.contains("help") {
-            return Some(&a.name);
-        }
-
-        next = a.subcommand.as_deref();
-    }
-    None
-}
 
 pub fn write_help(mut w: impl Write, command: &Command) -> io::Result<()> {
     write!(&mut w, "{}\n\n", command.help)?;
@@ -76,7 +61,7 @@ pub fn write_help(mut w: impl Write, command: &Command) -> io::Result<()> {
 }
 
 fn write_usage(mut w: impl Write, command: &Command) -> io::Result<()> {
-    write!(&mut w, "Usage: {}", command.name())?;
+    write!(&mut w, "Usage: {}", command.full_path.join(" "))?;
 
     for prop in command.props.iter().filter(|p| p.required) {
         write!(&mut w, " {}=<value>", prop.name())?;
@@ -99,27 +84,4 @@ fn write_usage(mut w: impl Write, command: &Command) -> io::Result<()> {
 
 fn calculate_col_width(list: &[String]) -> usize {
     list.iter().map(|s| s.len()).max().unwrap_or(0) + 5
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn retrieve_help_command() {
-        let cmdline = ["exe", "command", "subcommand", "+help"];
-        let args = Args::parse_from(cmdline);
-        assert_eq!(requested_help(&args), Some("subcommand"));
-
-        let cmdline = ["exe", "+help"];
-        let args = Args::parse_from(cmdline);
-        assert_eq!(requested_help(&args), Some("exe"));
-
-        let cmdline = ["exe", "command"];
-        let args = Args::parse_from(cmdline);
-        assert_eq!(requested_help(&args), None);
-
-        let cmdline: Vec<String> = vec![];
-        let args = Args::parse_from(cmdline);
-        assert_eq!(requested_help(&args), None);
-    }
 }

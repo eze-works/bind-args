@@ -21,8 +21,8 @@
 //! - Everything else is a sub-[`Command`]. Sub-commands can have their own props, flags and
 //! sub-commands.
 
-mod args;
+mod cmdline;
 mod command;
 
-pub use args::Args;
-pub use command::{Command, Flag, Prop};
+pub use cmdline::{Args};
+pub use command::{InvalidArguments, Command, Flag, Prop};
