@@ -10,5 +10,5 @@ keywords = ["cli", "arguments", "parsing"]
 categories = ["command-line-interface"]
 
 [dependencies]
-thiserror = "1.0.61"
+itertools = "0.13.0"
 
