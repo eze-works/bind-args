@@ -1,8 +1,8 @@
 #![deny(missing_docs)]
-//! Parsing self-describing command line arguments
+//! Parsing command line arguments
 //!
 //! The crate revolves around the [`ArgumentBag`] data structure from which options, flags and
-//! operands may be extracted by name.
+//! operands may be extracted.
 //!
 //! You get an instance of the bag by callind [`parse`] or [`parse_env`].
 
@@ -58,14 +58,14 @@ impl Display for Arg {
 }
 
 impl Arg {
-    fn operand(self) -> Operand {
+    fn into_operand(self) -> Operand {
         let Self::Operand(o) = self else {
             panic!("expected Arg::Operand variant");
         };
         o
     }
 
-    fn option(self) -> OptionArg {
+    fn into_option(self) -> OptionArg {
         let Self::Option(o) = self else {
             panic!("expected Arg::Option variant");
         };
@@ -83,17 +83,11 @@ impl Arg {
 pub struct ArgumentBag {
     /// The name of the program being run
     pub program_name: String,
-    _command: Option<String>,
     args: Vec<Arg>,
     ignored: Vec<String>,
 }
 
 impl ArgumentBag {
-    /// Returns the name of the parsed sub-command, if any
-    pub fn command(&self) -> Option<&str> {
-        self._command.as_deref()
-    }
-
     /// Removes the first flag with the given name from the bag if it exists.
     ///
     /// # Example
@@ -143,7 +137,7 @@ impl ArgumentBag {
             }
 
             let arg = std::mem::take(&mut self.args[i]);
-            return Some(arg.option().value);
+            return Some(arg.into_option().value);
         }
         None
     }
@@ -174,7 +168,7 @@ impl ArgumentBag {
             }
 
             let arg = std::mem::take(&mut self.args[i]);
-            return Some(arg.operand().value);
+            return Some(arg.into_operand().value);
         }
         None
     }
@@ -210,6 +204,15 @@ impl ArgumentBag {
     /// Returns an owned `Vec` with all the arguments after the "end of options" marker (i.e. `--`)
     ///
     /// Subsequent calls to this function will return an empty `Vec`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let mut bag = bind_args::parse(["program", "--", "does-not-count"]).unwrap();
+    /// assert!(bag.is_empty());
+    /// assert_eq!(bag.remove_ignored(), vec![String::from("does-not-count")]);
+    /// assert!(bag.remove_ignored().is_empty());
+    /// ```
     pub fn remove_ignored(&mut self) -> Vec<String> {
         self.ignored.split_off(0)
     }
@@ -221,8 +224,8 @@ impl ArgumentBag {
     /// # Example
     ///
     /// ```
-    /// let cmdline = bind_args::parse(["program", "--", "does-not-count"]).unwrap();
-    /// assert!(cmdline.is_empty());
+    /// let bag = bind_args::parse(["program", "--", "does-not-count"]).unwrap();
+    /// assert!(bag.is_empty());
     /// ```
     pub fn is_empty(&self) -> bool {
         self.args.iter().all(Arg::is_empty)
@@ -250,10 +253,10 @@ pub fn parse_env() -> Result<ArgumentBag, ParseError> {
 ///
 /// ```
 /// use bind_args::parse;
-/// let parsed = parse(["git", "@remote-add"]).unwrap();
+/// let bag = parse(["git"]).unwrap();
 ///
-/// assert_eq!(parsed.program_name, "git");
-/// assert_eq!(parsed.command(), Some("remote-add"));
+/// assert_eq!(bag.program_name, "git");
+/// assert_eq!(bag.is_empty(), true);
 /// ```
 ///
 /// # Panics
@@ -272,21 +275,11 @@ where
 
     let program_name = args.next().expect("missing program name");
 
-    let mut command = None;
-
     let mut parsed = Vec::new();
     let mut ignored = Vec::new();
 
     let mut operand_count = 0;
     let mut saw_end_of_options = false;
-
-    // A command may only appear as the first token
-    if let Some(maybe_command) = args.peek() {
-        if maybe_command.starts_with('@') {
-            let name = args.next().unwrap().split_off(1);
-            command = Some(name);
-        }
-    }
 
     for arg in args {
         if saw_end_of_options {
@@ -297,10 +290,6 @@ where
         if arg == "--" {
             saw_end_of_options = true;
             continue;
-        }
-
-        if arg.starts_with('@') {
-            return Err(ParseError::TooManyCommands(arg));
         }
 
         if let Some(value) = arg.strip_prefix("--") {
@@ -356,7 +345,6 @@ where
 
     Ok(ArgumentBag {
         program_name,
-        _command: command,
         args: parsed,
         ignored,
     })
@@ -365,8 +353,6 @@ where
 /// A command line parsing error
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
-    /// Encountered two or more sub-commands (e.g. `program @one @two`)
-    TooManyCommands(String),
     /// Encountered an option without a value  (e.g. `--invalid`)
     OptionMissingValue(String),
     /// Encountered an option withuot a name (e.g. `--=value`)
@@ -378,12 +364,6 @@ pub enum ParseError {
 impl Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::TooManyCommands(s) => {
-                write!(
-                    f,
-                    "Only one command may be given. Saw a second command '{s}'",
-                )
-            }
             Self::OptionMissingValue(s) => {
                 write!(f, "Option '{s}' is missing a value")
             }
@@ -405,20 +385,10 @@ mod tests {
 
     #[test]
     fn end_of_options() {
-        let mut bag = parse(["program", "--", "@a", "@b"]).unwrap();
-        let  ignored = bag.remove_ignored();
+        let mut bag = parse(["program", "--", "a", "--b"]).unwrap();
+        let ignored = bag.remove_ignored();
 
-        assert_eq!(ignored, vec![String::from("@a"), String::from("@b")]);
-    }
-
-    #[test]
-    fn at_most_one_command() {
-        let result = parse(["program", "@cmd", "@another"]);
-
-        assert_eq!(
-            result,
-            Err(ParseError::TooManyCommands("@another".to_string()))
-        );
+        assert_eq!(ignored, vec![String::from("a"), String::from("--b")]);
     }
 
     #[test]
@@ -449,12 +419,6 @@ mod tests {
 
         let result = parse(["program", "-long"]);
         assert_eq!(result, Err(ParseError::MalformedFlag("-long".to_string())));
-    }
-
-    #[test]
-    fn parse_command() {
-        let result = parse(["program", "@cmd"]).unwrap();
-        assert_eq!(result.command(), Some("cmd"));
     }
 
     #[test]

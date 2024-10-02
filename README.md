@@ -1,23 +1,16 @@
 # bind_args
 
-A parser for [self-describing command line arguments](https://eze.works/post/self-describing-command-line-arguments).
+A simple command-line argument parser.
 
-- [Documentation](https://docs.rs/bind-args/0.3.0/bind_args/)
+- [Documentation](https://docs.rs/bind-args/)
 - [Library on crates.io](https://crates.io/crates/bind-args)
 
 The syntax is similar to the prevalent GNU and POSIX syntaxes, but deviates in a few ways for clarity and ease of implementation:
 
 - Options and their values are always written as one shell "word" separated by `=`.
   (e.g. `--level=info` or `-f=archilve.tar`)
-- Fused-style arguments are not allowed
-- Sub-commands are prefixed with the at-sign (i.e. `@`)
-- There may only be one sub-command.
-
-It looks like this:
-
-```text
-./program @command --option=value --flag operand
-```
+- Fused-style arguments are not allowed.
+  (e.g. You cannot use `-ovalue` as an alteranative to `-o=value`. You can't combine short options either)
 
 # Example
 
