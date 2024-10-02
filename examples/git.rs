@@ -1,7 +1,7 @@
 use anyhow::bail;
-use bind_args::{parse_from_env, Cmdline};
+use bind_args::{parse_env, ArgumentBag};
 
-const ROOT_HELP: &'static str = r#"GIT
+const ROOT_HELP: &str = r#"GIT
 Documentation for root command
 
 More info
@@ -11,7 +11,7 @@ More info
 And such
 "#;
 
-const REMOTE_HELP: &'static str = r#"GIT REMOTE
+const REMOTE_HELP: &str = r#"GIT REMOTE
 Documentation for git remote command
 
 More info
@@ -29,46 +29,46 @@ struct Remote {
     verbose: bool,
 }
 
-fn handle_remote(mut args: Cmdline) -> anyhow::Result<()> {
+fn handle_remote(mut args: ArgumentBag) -> anyhow::Result<()> {
     let mut remote = Remote::default();
 
-    if args.take_flag("help") || args.take_flag("h") {
+    if args.remove_flag("help") || args.remove_flag("h") {
         println!("{REMOTE_HELP}");
         std::process::exit(0);
     }
 
-    let Some(level) = args.take_option("level") else {
+    let Some(level) = args.remove_option("level") else {
         bail!("missing required option 'level'");
     };
 
-    remote.verbose = args.take_flag("verbose");
+    remote.verbose = args.remove_flag("verbose");
     remote.level = level;
 
     if !args.is_empty() {
-        let remaining = args.take_remaining().join(",");
+        let remaining = args.remove_remaining().join(",");
         bail!("unexpected args: {remaining}");
     }
 
     Ok(())
 }
 
-fn handle_root(mut args: Cmdline) -> anyhow::Result<()> {
+fn handle_root(mut args: ArgumentBag) -> anyhow::Result<()> {
     let mut root = Root::default();
-    if args.take_flag("help") || args.take_flag("h") {
+    if args.remove_flag("help") || args.remove_flag("h") {
         println!("{ROOT_HELP}");
         std::process::exit(0);
     }
-    root.verbose = args.take_flag("verbose");
+    root.verbose = args.remove_flag("verbose");
 
     if !args.is_empty() {
-        let remaining = args.take_remaining().join(",");
+        let remaining = args.remove_remaining().join(",");
         bail!("unexpected args: {remaining}");
     }
 
     Ok(())
 }
 pub fn main() -> anyhow::Result<()> {
-    let cmdline = parse_from_env()?;
+    let cmdline = parse_env()?;
 
     match cmdline.command() {
         Some("remote") => handle_remote(cmdline),

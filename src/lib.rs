@@ -1,53 +1,10 @@
 #![deny(missing_docs)]
 //! Parsing self-describing command line arguments
 //!
-//! # Introduction
+//! The crate revolves around the [`ArgumentBag`] data structure from which options, flags and
+//! operands may be extracted by name.
 //!
-//! The self-describing command line syntax is similar to the prevalent GNU and POSIX syntaxes, but
-//! deviates in a few ways for clarity and ease of implementation:
-//!
-//! - Options and their values are always written as one shell "word" separated by `=`.
-//!   (e.g. `--level=info` or `-f=archilve.tar`)
-//! - Fused-style arguments are not allowed
-//! - Sub-commands are prefixed with the at-sign (i.e. `@`)
-//! - There may only be one sub-command.
-//!
-//! It looks like this:
-//!
-//! ```text
-//! ./program @command --option=value --flag operand
-//! ```
-//!
-//! # Example
-//!
-//! ```
-//! use bind_args::parse;
-//!
-//! struct AppArgs {
-//!     verbose: bool,
-//!     log_level: Option<String>,
-//!     path: String,
-//! }
-//!
-//! let mut cmdline = parse(["program", "--log-level=INFO", "--verbose", "/etc/config"]).unwrap();
-//!
-//! let args = AppArgs {
-//!     verbose: cmdline.take_flag("verbose"),
-//!     log_level: cmdline.take_option("log-level"),
-//!     path: cmdline.take_operand(0).unwrap_or(String::from("/"))
-//! };
-//!
-//! assert_eq!(args.verbose, true);
-//! assert_eq!(args.log_level.as_deref(), Some("INFO"));
-//! assert_eq!(args.path, "/etc/config");
-//!
-//! // It is important to make sure there are not unexpected arguments.
-//! if !cmdline.is_empty() {
-//!     let unexpected = cmdline.take_remaining().join(", ");
-//!     eprintln!("Unexpected argument(s): {}", unexpected);
-//!     std::process::exit(1);
-//! }
-//! ```
+//! You get an instance of the bag by callind [`parse`] or [`parse_env`].
 
 use std::error::Error;
 use std::fmt::Display;
@@ -101,27 +58,6 @@ impl Display for Arg {
 }
 
 impl Arg {
-    fn as_flag(&self) -> Option<&Flag> {
-        let Self::Flag(f) = self else {
-            return None;
-        };
-        Some(f)
-    }
-
-    fn as_option(&self) -> Option<&OptionArg> {
-        let Self::Option(o) = self else {
-            return None;
-        };
-        Some(o)
-    }
-
-    fn as_operand(&self) -> Option<&Operand> {
-        let Self::Operand(o) = self else {
-            return None;
-        };
-        Some(o)
-    }
-
     fn operand(self) -> Operand {
         let Self::Operand(o) = self else {
             panic!("expected Arg::Operand variant");
@@ -142,9 +78,9 @@ impl Arg {
     }
 }
 
-/// Parsed command line arguments
+/// A bag of parsed command line arguments
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct Cmdline {
+pub struct ArgumentBag {
     /// The name of the program being run
     pub program_name: String,
     _command: Option<String>,
@@ -152,84 +88,114 @@ pub struct Cmdline {
     ignored: Vec<String>,
 }
 
-impl Cmdline {
-    fn flag_iter(&self) -> impl Iterator<Item = (usize, &Flag)> {
-        self.args
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, arg)| Some((idx, arg.as_flag()?)))
-    }
-
-    fn option_iter(&self) -> impl Iterator<Item = (usize, &OptionArg)> {
-        self.args
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, arg)| Some((idx, arg.as_option()?)))
-    }
-
-    fn operand_iter(&self) -> impl Iterator<Item = (usize, &Operand)> {
-        self.args
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, arg)| Some((idx, arg.as_operand()?)))
-    }
-
+impl ArgumentBag {
     /// Returns the name of the parsed sub-command, if any
     pub fn command(&self) -> Option<&str> {
         self._command.as_deref()
     }
 
-    /// Returns `true` if the command line invocation contained a flag `name`.
-    pub fn flag(&self, name: &str) -> bool {
-        self.flag_iter().any(|(_, f)| name == f.name)
+    /// Removes the first flag with the given name from the bag if it exists.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bind_args::parse;
+    ///
+    /// let mut bag = parse(["program", "--flag1", "--flag2"]).unwrap();
+    /// assert_eq!(bag.remove_flag("flag2"), true);
+    /// assert_eq!(bag.remove_flag("flag2"), false);
+    /// ```
+    pub fn remove_flag(&mut self, name: &str) -> bool {
+        for i in 0..self.args.len() {
+            let Arg::Flag(flag) = &self.args[i] else {
+                continue;
+            };
+
+            if flag.name != name {
+                continue;
+            }
+
+            std::mem::take(&mut self.args[i]);
+            return true;
+        }
+        false
     }
 
-    /// Returns the value of option `name` if it exists
-    pub fn option(&self, name: &str) -> Option<&str> {
-        let (_, res) = self.option_iter().find(|(_, o)| name == o.name)?;
-        Some(res.value.as_str())
+    /// Removes the first option with the given `name` if it exists.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bind_args::parse;
+    ///
+    /// let mut bag = parse(["program", "--opt1=value", "--opt2=value2"]).unwrap();
+    /// assert_eq!(bag.remove_option("opt2").as_deref(), Some("value2"));
+    /// assert_eq!(bag.remove_option("opt2").as_deref(), None);
+    /// ```
+    pub fn remove_option(&mut self, name: &str) -> Option<String> {
+        for i in 0..self.args.len() {
+            let Arg::Option(option) = &self.args[i] else {
+                continue;
+            };
+
+            if option.name != name {
+                continue;
+            }
+
+            let arg = std::mem::take(&mut self.args[i]);
+            return Some(arg.option().value);
+        }
+        None
     }
 
-    /// Returns the value of the operand (i.e. positional argument) at the given position, if any.
-    pub fn operand(&self, position: usize) -> Option<&str> {
-        let (_, res) = self.operand_iter().find(|(_, o)| position == o.position)?;
-        Some(res.value.as_str())
+    /// Removes the operand at the given position if it exists.
+    ///
+    /// This does not alter the position of other operands.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bind_args::parse;
+    ///
+    /// let mut bag = parse(["program", "a", "b", "c"]).unwrap();
+    ///
+    /// assert_eq!(bag.remove_operand(0).as_deref(), Some("a"));
+    /// assert_eq!(bag.remove_operand(0).as_deref(), None);
+    /// assert_eq!(bag.remove_operand(2).as_deref(), Some("c"));
+    /// ```
+    pub fn remove_operand(&mut self, position: usize) -> Option<String> {
+        for i in 0..self.args.len() {
+            let Arg::Operand(op) = &self.args[i] else {
+                continue;
+            };
+
+            if op.position != position {
+                continue;
+            }
+
+            let arg = std::mem::take(&mut self.args[i]);
+            return Some(arg.operand().value);
+        }
+        None
     }
 
-    /// Returns `true` if the command line invocation contained a flag `name`.
-    /// The first flag found is removed, so unless the flag was provided multiple times, subsequent
-    /// calls to this function will return `false`.
-    pub fn take_flag(&mut self, name: &str) -> bool {
-        let Some((idx, _)) = self.flag_iter().find(|(_, f)| name == f.name) else {
-            return false;
-        };
-        std::mem::take(&mut self.args[idx]);
-        true
-    }
-
-    /// Returns the value of the option `name` if it exists.
-    /// The first option found is removed, so unless the option was provided multiple times,
-    /// subsequent calls to this function will return `None`.
-    pub fn take_option(&mut self, name: &str) -> Option<String> {
-        let (idx, _) = self.option_iter().find(|(_, o)| name == o.name)?;
-        let arg = std::mem::take(&mut self.args[idx]);
-        Some(arg.option().value)
-    }
-
-    /// Returns the value of the operand (i.e. positional argument) at the given position, if any.
-    /// The operand is removed.
-    pub fn take_operand(&mut self, position: usize) -> Option<String> {
-        let (idx, _) = self.operand_iter().find(|(_, o)| position == o.position)?;
-        let arg = std::mem::take(&mut self.args[idx]);
-        Some(arg.operand().value)
-    }
-
-    /// Returns any leftover arguments that have not been `take_`en.
+    /// Removes any leftover flags, options and operands that have not been `remove_*`d.
     ///
     /// Subsequent calls will return an empty `Vec`
     ///
-    /// The returned `Vec` will not include [`ignored`](crate::Cmdline::ignored) arguments.
-    pub fn take_remaining(&mut self) -> Vec<String> {
+    /// The returned `Vec` will not include any arguments that appeared after the end-of-optiosn
+    /// marker (i.e. `--`).
+    /// Use [`remove_ignored`](crate::ArgumentBag::remove_ignored) for those.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bind_args::parse;
+    ///
+    /// let mut bag = parse(["program", "arg", "--", "stuff"]).unwrap();
+    /// assert_eq!(bag.remove_remaining(), vec![String::from("arg")]);
+    /// ```
+    pub fn remove_remaining(&mut self) -> Vec<String> {
         let mut leftover = vec![];
 
         for i in 0..self.args.len() {
@@ -241,15 +207,10 @@ impl Cmdline {
         leftover
     }
 
-    /// Returns an iterator over arguments occuring after the "end of options" marker (i.e. `--`)
-    pub fn ignored(&self) -> impl Iterator<Item = &str> {
-        self.ignored.iter().map(String::as_str)
-    }
-
     /// Returns an owned `Vec` with all the arguments after the "end of options" marker (i.e. `--`)
     ///
     /// Subsequent calls to this function will return an empty `Vec`.
-    pub fn take_ignored(&mut self) -> Vec<String> {
+    pub fn remove_ignored(&mut self) -> Vec<String> {
         self.ignored.split_off(0)
     }
 
@@ -271,32 +232,34 @@ impl Cmdline {
 /// Parses command line arguments from `std::env::args()`
 ///
 /// See [`parse`]
-pub fn parse_from_env() -> Result<Cmdline, ParseError> {
+pub fn parse_env() -> Result<ArgumentBag, ParseError> {
     parse(std::env::args())
 }
 
-/// Parses the given command line arguments
+/// Parses the given command line arguments into a [bag](crate::ArgumentBag)
 ///
 /// The input is expected to have at least one element corresponding to the name of the executing
 /// program.
 ///
+/// # End of options marker
+///
+/// The end-of-options marker (i.e. `--`) is respected.
+/// Arguments occuring after it are not parsed and are stored in the bag as-is.
+///
 /// # Example
 ///
 /// ```
-/// let args = ["git", "@remote-add", "--ref=origin", "--verbose"];
-/// let parsed = bind_args::parse(args).unwrap();
+/// use bind_args::parse;
+/// let parsed = parse(["git", "@remote-add"]).unwrap();
 ///
 /// assert_eq!(parsed.program_name, "git");
 /// assert_eq!(parsed.command(), Some("remote-add"));
-/// assert_eq!(parsed.option("ref"), Some("origin"));
-/// assert_eq!(parsed.flag("verbose"), true);
-///
 /// ```
 ///
 /// # Panics
 ///
 /// Panics if any argument to the process is not valid Unicode.
-pub fn parse<I, T>(arguments: I) -> Result<Cmdline, ParseError>
+pub fn parse<I, T>(arguments: I) -> Result<ArgumentBag, ParseError>
 where
     I: IntoIterator<Item = T>,
     T: Into<String>,
@@ -391,7 +354,7 @@ where
         operand_count += 1;
     }
 
-    Ok(Cmdline {
+    Ok(ArgumentBag {
         program_name,
         _command: command,
         args: parsed,
@@ -442,12 +405,10 @@ mod tests {
 
     #[test]
     fn end_of_options() {
-        let result = parse(["program", "--", "@a", "@b"]).unwrap();
-        let mut ignored = result.ignored();
+        let mut bag = parse(["program", "--", "@a", "@b"]).unwrap();
+        let  ignored = bag.remove_ignored();
 
-        assert_eq!(ignored.next(), Some("@a"));
-        assert_eq!(ignored.next(), Some("@b"));
-        assert_eq!(ignored.next(), None);
+        assert_eq!(ignored, vec![String::from("@a"), String::from("@b")]);
     }
 
     #[test]
@@ -491,58 +452,43 @@ mod tests {
     }
 
     #[test]
-    fn get_option() {
-        let result = parse(["program", "--name==value"]).unwrap();
-        assert_eq!(result.option("name"), Some("=value"));
-    }
-
-    #[test]
-    fn take_option() {
-        let mut result = parse(["program", "--opt1=val1", "--opt2=val2"]).unwrap();
-        assert!(!result.is_empty());
-        assert_eq!(result.take_option("opt1"), Some("val1".to_string()));
-        assert_eq!(result.take_option("opt2"), Some("val2".to_string()));
-        assert_eq!(result.take_option("opt3"), None);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn get_flag() {
-        let result = parse(["program", "--flag"]).unwrap();
-        assert_eq!(result.flag("flag"), true);
-    }
-
-    #[test]
-    fn take_flag() {
-        let mut result = parse(["prgoram", "--flag1", "--flag2"]).unwrap();
-        assert!(!result.is_empty());
-        assert_eq!(result.take_flag("flag1"), true);
-        assert_eq!(result.take_flag("flag2"), true);
-        assert_eq!(result.take_flag("flag2"), false);
-        assert!(result.is_empty());
-    }
-
-    #[test]
     fn parse_command() {
         let result = parse(["program", "@cmd"]).unwrap();
         assert_eq!(result.command(), Some("cmd"));
     }
 
     #[test]
-    fn get_operand() {
-        let result = parse(["program", "=a", "b"]).unwrap();
-        assert_eq!(result.operand(0), Some("=a"));
-        assert_eq!(result.operand(1), Some("b"));
+    fn remove_option() {
+        let mut result = parse(["program", "--opt1=val1", "--opt2=val2"]).unwrap();
+        assert!(!result.is_empty());
+        assert_eq!(result.remove_option("opt1"), Some("val1".to_string()));
+        assert_eq!(result.remove_option("opt2"), Some("val2".to_string()));
+        assert_eq!(result.remove_option("opt3"), None);
+        assert!(result.is_empty());
     }
 
     #[test]
-    fn take_operand() {
+    fn remove_flag() {
+        let mut result = parse(["prgoram", "--flag1", "--flag2"]).unwrap();
+        assert!(!result.is_empty());
+        assert!(result.remove_flag("flag1"));
+        assert!(result.remove_flag("flag2"));
+        assert!(!result.remove_flag("flag2"));
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn remove_operand() {
         let mut result = parse(["program", "a", "b"]).unwrap();
         assert!(!result.is_empty());
-        assert_eq!(result.take_operand(0), Some("a".to_string()));
-        assert_eq!(result.take_operand(0), None);
-        assert_eq!(result.take_operand(1), Some("b".to_string()));
-        assert_eq!(result.take_operand(1), None);
+        assert_eq!(result.remove_operand(0), Some("a".to_string()));
+        assert_eq!(result.remove_operand(0), None);
+        assert_eq!(result.remove_operand(1), Some("b".to_string()));
+        assert_eq!(result.remove_operand(1), None);
         assert!(result.is_empty());
     }
 }
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDocTest;
