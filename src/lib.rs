@@ -9,17 +9,20 @@
 use std::error::Error;
 use std::fmt::Display;
 
+// e.g.: --blah
 #[derive(Debug, Clone, Default, Hash, PartialEq, Eq)]
-struct Flag {
+struct Switch {
     name: String,
 }
 
+// e.g.: --blah=hello
 #[derive(Debug, Clone, Default, Hash, PartialEq, Eq)]
-struct OptionArg {
+struct SwitchWithValue {
     name: String,
     value: String,
 }
 
+// e.g.: hello
 #[derive(Debug, Clone, Default, Hash, PartialEq, Eq)]
 struct Operand {
     position: usize,
@@ -28,8 +31,8 @@ struct Operand {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 enum Arg {
-    Flag(Flag),
-    Option(OptionArg),
+    Switch(Switch),
+    SwitchWithValue(SwitchWithValue),
     Operand(Operand),
     #[default]
     Empty,
@@ -38,14 +41,14 @@ impl Display for Arg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Empty => Ok(()),
-            Self::Flag(flag) => {
+            Self::Switch(flag) => {
                 if flag.name.len() == 1 {
                     write!(f, "-{}", flag.name)
                 } else {
                     write!(f, "--{}", flag.name)
                 }
             }
-            Self::Option(opt) => {
+            Self::SwitchWithValue(opt) => {
                 if opt.name.len() == 1 {
                     write!(f, "-{}={}", opt.name, opt.value)
                 } else {
@@ -65,8 +68,8 @@ impl Arg {
         o
     }
 
-    fn into_option(self) -> OptionArg {
-        let Self::Option(o) = self else {
+    fn into_switch_with_value(self) -> SwitchWithValue {
+        let Self::SwitchWithValue(o) = self else {
             panic!("expected Arg::Option variant");
         };
         o
@@ -101,7 +104,7 @@ impl ArgumentBag {
     /// ```
     pub fn remove_flag(&mut self, name: &str) -> bool {
         for i in 0..self.args.len() {
-            let Arg::Flag(flag) = &self.args[i] else {
+            let Arg::Switch(flag) = &self.args[i] else {
                 continue;
             };
 
@@ -115,36 +118,86 @@ impl ArgumentBag {
         false
     }
 
-    /// Removes the first option with the given `name` if it exists.
+    /// Removes the first option with the given `name` and returns its value.
+    ///
+    /// This works with both space-separated and `=`-separated option forms (i.e. `--option=value`
+    /// and `--option value`)
     ///
     /// # Example
     ///
     /// ```
     /// use bind_args::parse;
     ///
-    /// let mut bag = parse(["program", "--opt1=value", "--opt2=value2"]).unwrap();
+    /// let mut bag = parse(["program", "--opt1=value", "--opt2", "value2"]).unwrap();
+    /// assert_eq!(bag.remove_option("opt1").as_deref(), Some("value"));
+    /// assert_eq!(bag.remove_option("opt1").as_deref(), None);
     /// assert_eq!(bag.remove_option("opt2").as_deref(), Some("value2"));
     /// assert_eq!(bag.remove_option("opt2").as_deref(), None);
     /// ```
+    ///
+    /// This will return `None` when a switch argument with the given name exists, but does not have a
+    /// value.
+    /// This is interpreted as a flag.
+    ///
+    /// ```
+    /// use bind_args::parse;
+    ///
+    /// let mut bag = parse(["program", "--opt"]).unwrap();
+    /// assert_eq!(bag.remove_option("opt"), None);
+    /// assert_eq!(bag.remove_flag("opt"), true);
+    /// ```
+    ///
+    /// When a switch is followed by a value, it is ambiguous whether it should be treated as an option or a flag.
+    /// The order in which functions are called resolves this ambiguity.
+    ///
+    /// ```
+    /// use bind_args::parse;
+    ///
+    /// // Treated as a flag followed by an operand
+    /// let mut bag = parse(["program", "--option", "value"]).unwrap();
+    /// assert_eq!(bag.remove_flag("option"), true);
+    /// assert_eq!(bag.remove_operand().as_deref(), Some("value"));
+    /// assert!(bag.is_empty());
+    ///
+    /// // Treated as an option
+    /// let mut bag = parse(["program", "--option", "value"]).unwrap();
+    /// assert_eq!(bag.remove_option("option").as_deref(), Some("value"));
+    /// assert!(bag.is_empty());
+    /// ```
     pub fn remove_option(&mut self, name: &str) -> Option<String> {
         for i in 0..self.args.len() {
-            let Arg::Option(option) = &self.args[i] else {
-                continue;
+            match &self.args[i] {
+                Arg::SwitchWithValue(s) => {
+                    if s.name != name {
+                        continue;
+                    }
+
+                    let arg = std::mem::take(&mut self.args[i]);
+                    return Some(arg.into_switch_with_value().value);
+                }
+                Arg::Switch(s) => {
+                    if s.name != name {
+                        continue;
+                    }
+
+                    let Some(Arg::Operand(_)) = self.args.get(i + 1) else {
+                        return None;
+                    };
+
+                    std::mem::take(&mut self.args[i]);
+                    let value = std::mem::take(&mut self.args[i + 1]);
+
+                    return Some(value.into_operand().value);
+                }
+                _ => continue,
             };
-
-            if option.name != name {
-                continue;
-            }
-
-            let arg = std::mem::take(&mut self.args[i]);
-            return Some(arg.into_option().value);
         }
         None
     }
 
-    /// Removes the operand at the given position if it exists.
+    /// Removes the next operand from the argument bag, if any.
     ///
-    /// This does not alter the position of other operands.
+    /// Operands are removed in the order they were supplied.
     ///
     /// # Example
     ///
@@ -153,19 +206,16 @@ impl ArgumentBag {
     ///
     /// let mut bag = parse(["program", "a", "b", "c"]).unwrap();
     ///
-    /// assert_eq!(bag.remove_operand(0).as_deref(), Some("a"));
-    /// assert_eq!(bag.remove_operand(0).as_deref(), None);
-    /// assert_eq!(bag.remove_operand(2).as_deref(), Some("c"));
+    /// assert_eq!(bag.remove_operand().as_deref(), Some("a"));
+    /// assert_eq!(bag.remove_operand().as_deref(), Some("b"));
+    /// assert_eq!(bag.remove_operand().as_deref(), Some("c"));
+    /// assert_eq!(bag.remove_operand().as_deref(), None);
     /// ```
-    pub fn remove_operand(&mut self, position: usize) -> Option<String> {
+    pub fn remove_operand(&mut self) -> Option<String> {
         for i in 0..self.args.len() {
-            let Arg::Operand(op) = &self.args[i] else {
+            let Arg::Operand(_) = &self.args[i] else {
                 continue;
             };
-
-            if op.position != position {
-                continue;
-            }
 
             let arg = std::mem::take(&mut self.args[i]);
             return Some(arg.into_operand().value);
@@ -297,7 +347,7 @@ where
                 if name.len() < 2 {
                     return Err(ParseError::MalformedOption(arg));
                 }
-                parsed.push(Arg::Option(OptionArg {
+                parsed.push(Arg::SwitchWithValue(SwitchWithValue {
                     name: name.to_string(),
                     value: value.to_string(),
                 }));
@@ -306,7 +356,7 @@ where
                     return Err(ParseError::MalformedFlag(arg));
                 }
 
-                parsed.push(Arg::Flag(Flag {
+                parsed.push(Arg::Switch(Switch {
                     name: value.to_string(),
                 }));
             }
@@ -319,7 +369,7 @@ where
                     return Err(ParseError::MalformedOption(arg));
                 }
 
-                parsed.push(Arg::Option(OptionArg {
+                parsed.push(Arg::SwitchWithValue(SwitchWithValue {
                     name: name.to_string(),
                     value: value.to_string(),
                 }));
@@ -328,7 +378,7 @@ where
                     return Err(ParseError::MalformedFlag(arg));
                 }
 
-                parsed.push(Arg::Flag(Flag {
+                parsed.push(Arg::Switch(Switch {
                     name: value.to_string(),
                 }));
             }
@@ -423,12 +473,26 @@ mod tests {
 
     #[test]
     fn remove_option() {
+        // =-separated
         let mut result = parse(["program", "--opt1=val1", "--opt2=val2"]).unwrap();
         assert!(!result.is_empty());
         assert_eq!(result.remove_option("opt1"), Some("val1".to_string()));
         assert_eq!(result.remove_option("opt2"), Some("val2".to_string()));
-        assert_eq!(result.remove_option("opt3"), None);
+        assert_eq!(result.remove_option("opt2"), None);
         assert!(result.is_empty());
+
+        // space separated
+        let mut bag = parse(["program", "--opt1", "val1", "--opt2", "val2"]).unwrap();
+        assert_eq!(bag.remove_option("opt1"), Some("val1".to_string()));
+        assert_eq!(bag.remove_option("opt2"), Some("val2".to_string()));
+        assert_eq!(bag.remove_option("opt2"), None);
+        assert!(bag.is_empty());
+
+        // does not remove flags
+        let mut bag = parse(["program", "--opt1"]).unwrap();
+        assert_eq!(bag.remove_option("opt1"), None);
+        assert!(bag.remove_flag("opt1"));
+        assert!(!bag.remove_flag("opt1"));
     }
 
     #[test]
@@ -445,11 +509,24 @@ mod tests {
     fn remove_operand() {
         let mut result = parse(["program", "a", "b"]).unwrap();
         assert!(!result.is_empty());
-        assert_eq!(result.remove_operand(0), Some("a".to_string()));
-        assert_eq!(result.remove_operand(0), None);
-        assert_eq!(result.remove_operand(1), Some("b".to_string()));
-        assert_eq!(result.remove_operand(1), None);
+        assert_eq!(result.remove_operand().as_deref(), Some("a"));
+        assert_eq!(result.remove_operand().as_deref(), Some("b"));
+        assert_eq!(result.remove_operand(), None);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn remove_order_matters() {
+        let mut bag = parse(["program", "--option", "value"]).unwrap();
+        assert_eq!(bag.remove_option("option").as_deref(), Some("value"));
+        assert!(!bag.remove_flag("option"));
+        assert!(bag.is_empty());
+
+        let mut bag = parse(["program", "--option", "value"]).unwrap();
+        assert!(bag.remove_flag("option"));
+        assert_eq!(bag.remove_option("option").as_deref(), None);
+        assert_eq!(bag.remove_operand().as_deref(), Some("value"));
+        assert!(bag.is_empty());
     }
 }
 

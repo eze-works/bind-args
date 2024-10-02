@@ -5,13 +5,6 @@ A simple command-line argument parser.
 - [Documentation](https://docs.rs/bind-args/)
 - [Library on crates.io](https://crates.io/crates/bind-args)
 
-The syntax is similar to the prevalent GNU and POSIX syntaxes, but deviates in a few ways for clarity and ease of implementation:
-
-- Options and their values are always written as one shell "word" separated by `=`.
-  (e.g. `--level=info` or `-f=archilve.tar`)
-- Fused-style arguments are not allowed.
-  (e.g. You cannot use `-ovalue` as an alteranative to `-o=value`. You can't combine short options either)
-
 # Example
 
 ```rust
@@ -23,12 +16,12 @@ struct AppArgs {
     path: String,
 }
 
-let mut bag = parse(["program", "--log-level=INFO", "--verbose", "/etc/config"]).unwrap();
+let mut bag = parse(["program", "--log-level", "INFO", "--verbose", "/etc/config"]).unwrap();
 
 let args = AppArgs {
     verbose: bag.remove_flag("verbose"),
     log_level: bag.remove_option("log-level"),
-    path: bag.remove_operand(0).unwrap_or(String::from("/"))
+    path: bag.remove_operand().unwrap_or(String::from("/"))
 };
 
 assert_eq!(args.verbose, true);

@@ -70,7 +70,7 @@ fn handle_root(mut args: ArgumentBag) -> anyhow::Result<()> {
 pub fn main() -> anyhow::Result<()> {
     let mut cmdline = parse_env()?;
 
-    match cmdline.remove_operand(0).as_deref() {
+    match cmdline.remove_operand().as_deref() {
         Some("remote") => handle_remote(cmdline),
         Some(cmd) => bail!("Argument '{cmd}' is not a valid command"),
         None => handle_root(cmdline),
